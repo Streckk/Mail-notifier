@@ -170,10 +170,24 @@ npm run typecheck  # solo verifica tipos, sin generar archivos
 
 ```bash
 docker build -t headphones-mail-notifier .
-docker run -d --name headphones-mail --restart unless-stopped \
+
+docker run -d --name headphones-mail \
+  --init \
+  --restart unless-stopped \
   --env-file .env \
+  --memory 256m \
+  --log-opt max-size=10m --log-opt max-file=3 \
   headphones-mail-notifier
 ```
+
+Qué hace cada bandera:
+
+| Bandera | Para qué |
+| ------- | -------- |
+| `--init` | Node corre como PID 1; sin esto no hay reaper de zombis. Las señales ya se manejan en el código, pero es la práctica correcta. |
+| `--restart unless-stopped` | Levanta el contenedor tras un reinicio del host, pero respeta un `docker stop` manual. |
+| `--memory 256m` | El proceso usa ~60 MB. El límite evita que una fuga se coma la RAM de una instancia chica. |
+| `--log-opt max-size` | Sin esto los logs de Docker crecen sin límite y con los meses llenan el disco. |
 
 Envío manual dentro del contenedor:
 
@@ -181,11 +195,59 @@ Envío manual dentro del contenedor:
 docker exec headphones-mail node dist/sendTest.js
 ```
 
+Logs:
+
+```bash
+docker logs -f --tail 50 headphones-mail
+```
+
+### Zona horaria
+
 El contenedor corre con el reloj del sistema en **UTC** a propósito. La hora del
 envío no depende de ese reloj sino de la variable `TIMEZONE`, que node-cron
-resuelve explícitamente. Es decir: el servidor puede estar en UTC y el correo
-igual sale a las 8:00 AM hora de Monterrey, incluido el cambio de horario de
-verano si llegara a aplicar.
+resuelve explícitamente. El servidor puede estar en UTC y el correo igual sale a
+las 8:00 AM hora de Monterrey.
+
+### Despliegue en EC2
+
+Compila la imagen **en la propia instancia**, no en tu equipo: si tu máquina es
+x86 y la instancia es ARM (`t4g`), la imagen no arranca.
+
+```bash
+# en la EC2
+sudo dnf install -y docker git          # Amazon Linux 2023
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER           # cierra y reabre la sesión
+
+git clone https://github.com/Streckk/Mail-notifier.git
+cd Mail-notifier
+```
+
+El `.env` no está en el repo: créalo en la instancia a partir de `.env.example` y
+restringe sus permisos, porque contiene el client secret.
+
+```bash
+cp .env.example .env
+nano .env
+chmod 600 .env
+```
+
+Comprueba la configuración sin enviar nada antes de dejarlo corriendo:
+
+```bash
+docker build -t headphones-mail-notifier .
+docker run --rm --env-file .env -e MAIL_DRY_RUN=true \
+  headphones-mail-notifier node dist/sendTest.js
+```
+
+Si la vista previa se ve bien, arranca el servicio con el `docker run` de arriba.
+
+Para actualizar tras un cambio en el repo:
+
+```bash
+git pull && docker build -t headphones-mail-notifier . \
+  && docker rm -f headphones-mail && docker run -d ...   # mismas banderas
+```
 
 ## Cambiar el horario
 
