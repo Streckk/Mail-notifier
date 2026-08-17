@@ -5,6 +5,7 @@
  */
 
 import { env } from './config/env.js';
+import { close as closeDatabase, connect as connectDatabase, countByStatus } from './db/notificationLog.js';
 import { closeMailClient, extractAddress, verifyGraphAccess } from './mail/graphClient.js';
 import { describeNextRun, startDailyNotification } from './scheduler/dailyNotification.js';
 import { logger } from './utils/logger.js';
@@ -28,6 +29,16 @@ async function main(): Promise<void> {
     }
   }
 
+  await connectDatabase();
+
+  const totals = await countByStatus();
+
+  if (totals) {
+    logger.info(
+      `Bitácora: ${totals.sent} enviados, ${totals.failed} fallidos, ${totals.pending} en espera`,
+    );
+  }
+
   const task = startDailyNotification();
   logger.info(`Próxima ejecución programada: ${describeNextRun(task)}`);
 
@@ -35,7 +46,7 @@ async function main(): Promise<void> {
     logger.info(`Señal ${signal} recibida; deteniendo el servicio`);
     void task.stop();
     closeMailClient();
-    process.exit(0);
+    void closeDatabase().finally(() => process.exit(0));
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));

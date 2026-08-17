@@ -50,6 +50,8 @@ cp .env.example .env
 | `TIMEZONE`               | No          | `America/Monterrey`                    | Zona horaria IANA usada por el cron y por los logs.                |
 | `DUPLICATE_GUARD`        | No          | `daily`                                | `daily` = un envío por día; `off` = sin guarda diaria.             |
 | `VERIFY_ON_STARTUP`      | No          | `true`                                 | Verifica el acceso a Graph al arrancar (no detiene el servicio).   |
+| `MONGODB_URI`            | No          | vacío                                  | Cadena de conexión. Sin ella, el servicio corre sin bitácora.      |
+| `MONGODB_DB`             | No          | `headphones_notifier`                  | Base de datos donde vive la colección `notifications`.             |
 
 La configuración se valida al arrancar: si falta una variable obligatoria, o el
 cron o la zona horaria son inválidos, el proceso falla de inmediato con un
@@ -296,6 +298,8 @@ src/
 │   └── sendHeadphonesNotification.ts # única función de envío
 ├── scheduler/
 │   └── dailyNotification.ts          # cron diario + prevención de duplicados
+├── db/
+│   └── notificationLog.ts            # bitácora de envíos en MongoDB (opcional)
 ├── templates/
 │   └── headphonesEmail.ts            # HTML y texto plano
 ├── utils/
@@ -305,6 +309,44 @@ src/
 └── sendTest.ts                       # envío manual de prueba
 ```
 
+## Bitácora en MongoDB
+
+Es opcional. Con `MONGODB_URI` configurada, cada intento de envío deja un
+documento en la colección `notifications`:
+
+| Estado    | Significado                                              |
+| --------- | -------------------------------------------------------- |
+| `pending` | El recordatorio se creó y el envío está en curso.          |
+| `sent`    | Graph aceptó el correo. Guarda `sentAt` y `messageId`.     |
+| `failed`  | El envío falló. Guarda el motivo en `error`.               |
+
+Cada documento incluye además `dayKey` (el día calendario en la zona horaria
+configurada), `recipients`, `subject`, `attemptedAt`, y `trigger`, que distingue
+los envíos del cron (`scheduled`) de los manuales (`manual`).
+
+Un documento que se queda en `pending` indica que el proceso murió a mitad del
+envío: el correo pudo haber salido o no.
+
+Consultas útiles:
+
+```js
+// últimos 10 intentos
+db.notifications.find().sort({ attemptedAt: -1 }).limit(10)
+
+// fallos con su motivo
+db.notifications.find({ status: 'failed' }, { dayKey: 1, error: 1 })
+
+// ¿se envió hoy?
+db.notifications.countDocuments({ dayKey: '2026-08-18', status: 'sent' })
+```
+
+### La bitácora nunca bloquea el envío
+
+El correo es la función principal; la bitácora es contabilidad. Si Mongo está
+caído o la URI es inválida, el servicio lo registra y **sigue enviando**, con la
+guarda anti-duplicados en memoria como respaldo. Verificado: sin `MONGODB_URI`
+arranca normal, y con una URI inalcanzable avisa y continúa.
+
 ## Prevención de duplicados
 
 Dos capas, ambas en memoria y sin dependencias externas:
@@ -312,22 +354,38 @@ Dos capas, ambas en memoria y sin dependencias externas:
 1. **`noOverlap: true`** de node-cron: si un envío sigue en curso cuando llega la
    siguiente ejecución programada, esa ejecución se omite (queda registrada en
    los logs).
-2. **Guarda por día calendario** (`DUPLICATE_GUARD=daily`, default): se recuerda
-   el último día (`YYYY-MM-DD` en la zona horaria configurada) en que un envío
-   terminó con éxito. Un segundo intento el mismo día se omite y se registra. Si
-   el envío falla, el día **no** se marca, de modo que un reintento sigue siendo
-   posible. Con `DUPLICATE_GUARD=off` esta capa se desactiva y cada disparo del
-   cron envía; `noOverlap` sigue activo.
+2. **Guarda por día calendario** (`DUPLICATE_GUARD=daily`, default): antes de
+   enviar se comprueba si ya existe un envío exitoso con ese `dayKey`. Si hay
+   bitácora en MongoDB la respuesta sale de ahí, así que **la guarda sobrevive a
+   reinicios del contenedor**; si no, se usa el estado en memoria. Un segundo
+   intento el mismo día se omite y se registra. Si el envío falla, el día **no**
+   se marca, de modo que un reintento sigue siendo posible. Con
+   `DUPLICATE_GUARD=off` esta capa se desactiva y cada disparo del cron envía;
+   `noOverlap` sigue activo.
 
 ### ¿Y si corrieran varias instancias?
 
-El estado vive en memoria de cada proceso, así que dos instancias no se ven
-entre sí y enviarían **un correo cada una** a la misma hora: el destinatario
-recibiría duplicados. Nada se rompe —no hay estado compartido que corromper—,
-simplemente llegan copias.
+Con la bitácora en MongoDB compartida, dos instancias sí se ven entre sí: la
+segunda consulta el `dayKey` y encuentra el envío de la primera. Eso **reduce**
+mucho la ventana, pero no la cierra del todo — si ambas consultan al mismo tiempo
+antes de que ninguna haya terminado de enviar, las dos ven "no enviado" y salen
+dos correos.
 
-Mientras el servicio corra en una sola instancia esto no es un problema, y por
-eso no se agregó Redis ni una base de datos. Si algún día hiciera falta correr
-varias réplicas, node-cron 4 ya trae `distributed: true` con un `runCoordinator`
-conectable: se implementaría un lock compartido ahí, sin tocar el resto del
-código.
+Para una sola instancia, que es el caso actual, no hay problema. Si algún día
+hicieran falta réplicas, la solución es un índice único parcial que haga
+imposible el segundo envío a nivel de base de datos:
+
+```js
+db.notifications.createIndex(
+  { dayKey: 1 },
+  { unique: true, partialFilterExpression: { status: 'sent' } },
+)
+```
+
+Con eso, el `updateOne` que marca `sent` en la segunda instancia falla con error
+de clave duplicada y queda constancia de que otra ya envió. Ojo: ese índice es
+incompatible con `DUPLICATE_GUARD=off`, porque impide más de un envío exitoso
+por día.
+
+La alternativa es `distributed: true` de node-cron 4 con un `runCoordinator`
+apoyado en la misma colección.

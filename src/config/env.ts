@@ -110,6 +110,15 @@ export const env = {
     timezone,
     duplicateGuard: toDuplicateGuard('DUPLICATE_GUARD', 'daily'),
   },
+  /**
+   * Bitácora en MongoDB. Opcional: sin `MONGODB_URI` el servicio funciona
+   * igual, solo que la guarda anti-duplicados vive únicamente en memoria y no
+   * queda historial.
+   */
+  mongo: {
+    uri: optional('MONGODB_URI', ''),
+    database: optional('MONGODB_DB', 'headphones_notifier'),
+  },
   /** Verifica el acceso a Graph al arrancar (no bloquea el servicio si falla). */
   verifyOnStartup: toBoolean('VERIFY_ON_STARTUP', true),
 } as const;

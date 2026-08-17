@@ -15,6 +15,7 @@
 import { schedule, type ScheduledTask } from 'node-cron';
 
 import { env } from '../config/env.js';
+import { hasSentOn } from '../db/notificationLog.js';
 import { sendHeadphonesNotification } from '../mail/sendHeadphonesNotification.js';
 import { logger } from '../utils/logger.js';
 import { formatDateTime, getDayKey } from '../utils/time.js';
@@ -24,16 +25,26 @@ const TASK_NAME = 'daily-headphones-notification';
 /** Último día (YYYY-MM-DD en la TZ configurada) en el que se envió con éxito. */
 let lastSentDayKey: string | null = null;
 
+/**
+ * ¿Ya se envió hoy? Se consulta primero la bitácora, que sobrevive a reinicios;
+ * si no está disponible, se recurre al estado en memoria.
+ */
+async function alreadySentToday(dayKey: string): Promise<boolean> {
+  const persisted = await hasSentOn(dayKey);
+
+  return persisted ?? lastSentDayKey === dayKey;
+}
+
 async function runDailyNotification(triggeredAt: Date): Promise<void> {
   const dayKey = getDayKey(triggeredAt, env.schedule.timezone);
 
-  if (env.schedule.duplicateGuard === 'daily' && lastSentDayKey === dayKey) {
+  if (env.schedule.duplicateGuard === 'daily' && (await alreadySentToday(dayKey))) {
     logger.warn(`El correo de ${dayKey} ya fue enviado; se omite este intento para evitar duplicados`);
     return;
   }
 
   try {
-    await sendHeadphonesNotification(triggeredAt);
+    await sendHeadphonesNotification(triggeredAt, 'scheduled');
     lastSentDayKey = dayKey;
   } catch {
     // El error ya se registró en sendHeadphonesNotification.
