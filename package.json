@@ -1,0 +1,30 @@
+{
+  "name": "headphones-mail-notifier",
+  "version": "1.0.0",
+  "description": "Servicio que envía diariamente el correo de autorización para el ingreso de audífonos al lugar de trabajo.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "send:test": "tsx src/sendTest.ts",
+    "send:test:dist": "node dist/sendTest.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/nodemailer": "^8.0.1",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}
