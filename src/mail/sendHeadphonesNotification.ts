@@ -48,6 +48,7 @@ export async function sendHeadphonesNotification(
     trigger,
     recipients: env.mail.to,
     subject: env.mail.subject,
+    body: text,
   });
 
   try {

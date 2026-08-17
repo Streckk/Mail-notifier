@@ -321,8 +321,13 @@ documento en la colección `notifications`:
 | `failed`  | El envío falló. Guarda el motivo en `error`.               |
 
 Cada documento incluye además `dayKey` (el día calendario en la zona horaria
-configurada), `recipients`, `subject`, `attemptedAt`, y `trigger`, que distingue
-los envíos del cron (`scheduled`) de los manuales (`manual`).
+configurada), `recipients`, `subject`, `body`, `attemptedAt`, y `trigger`, que
+distingue los envíos del cron (`scheduled`) de los manuales (`manual`).
+
+`body` guarda el cuerpo del correo en texto plano tal como salió, incluida la
+vigencia con su hora exacta. Así el registro es autosuficiente: si más adelante
+cambia la plantilla o alguna variable del `.env`, sigue constando qué decía
+literalmente el correo de cada día.
 
 Un documento que se queda en `pending` indica que el proceso murió a mitad del
 envío: el correo pudo haber salido o no.
@@ -352,11 +357,11 @@ de modo que el esquema expresa la invariante real.
 
 | Estado    | Campos obligatorios          | Campos prohibidos             |
 | --------- | ---------------------------- | ----------------------------- |
-| `pending` | los seis de base             | `sentAt`, `messageId`, `error` |
+| `pending` | los de base                  | `sentAt`, `messageId`, `error` |
 | `sent`    | base + `sentAt`, `messageId` | `error`                        |
 | `failed`  | base + `error`               | `sentAt`, `messageId`          |
 
-Los seis de base son `dayKey`, `status`, `trigger`, `recipients`, `subject` y
+Los de base son `dayKey`, `status`, `trigger`, `recipients`, `subject`, `body` y
 `attemptedAt`. Además: `dayKey` debe cumplir `^\d{4}-\d{2}-\d{2}$`, `recipients`
 no puede ir vacío, y `additionalProperties: false` rechaza cualquier campo no
 contemplado.

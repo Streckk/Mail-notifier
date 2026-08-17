@@ -32,6 +32,11 @@ export interface NotificationRecord {
   trigger: 'scheduled' | 'manual';
   recipients: string[];
   subject: string;
+  /**
+   * Cuerpo del correo en texto plano, tal como se envió. Se guarda la versión
+   * de texto y no el HTML: es el mismo contenido, legible al consultarlo.
+   */
+  body: string;
   /** Momento del intento, en UTC (Mongo siempre almacena en UTC). */
   attemptedAt: Date;
   sentAt?: Date;
@@ -48,10 +53,19 @@ const BASE_PROPERTIES = {
   trigger: { enum: ['scheduled', 'manual'] },
   recipients: { bsonType: 'array', minItems: 1, items: { bsonType: 'string' } },
   subject: { bsonType: 'string' },
+  body: { bsonType: 'string' },
   attemptedAt: { bsonType: 'date' },
 } as const;
 
-const BASE_REQUIRED = ['dayKey', 'status', 'trigger', 'recipients', 'subject', 'attemptedAt'];
+const BASE_REQUIRED = [
+  'dayKey',
+  'status',
+  'trigger',
+  'recipients',
+  'subject',
+  'body',
+  'attemptedAt',
+];
 
 /**
  * Validador de la colección.
@@ -169,7 +183,7 @@ export async function close(): Promise<void> {
 
 /** Registra un intento en estado `pending` y devuelve su id. */
 export async function recordPending(
-  input: Pick<NotificationRecord, 'dayKey' | 'trigger' | 'recipients' | 'subject'>,
+  input: Pick<NotificationRecord, 'dayKey' | 'trigger' | 'recipients' | 'subject' | 'body'>,
 ): Promise<ObjectId | null> {
   if (!collection) return null;
 
