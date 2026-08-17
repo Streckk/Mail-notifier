@@ -340,6 +340,33 @@ db.notifications.find({ status: 'failed' }, { dayKey: 1, error: 1 })
 db.notifications.countDocuments({ dayKey: '2026-08-18', status: 'sent' })
 ```
 
+### Validación de esquema
+
+La colección lleva un validador `$jsonSchema` que se aplica solo al conectar
+(`collMod`, o `createCollection` si aún no existe), con `validationLevel:
+"strict"` y `validationAction: "error"`. Mongo rechaza cualquier escritura que
+no cumpla, venga de donde venga.
+
+No es una lista plana de campos opcionales: usa `oneOf` con una rama por estado,
+de modo que el esquema expresa la invariante real.
+
+| Estado    | Campos obligatorios          | Campos prohibidos             |
+| --------- | ---------------------------- | ----------------------------- |
+| `pending` | los seis de base             | `sentAt`, `messageId`, `error` |
+| `sent`    | base + `sentAt`, `messageId` | `error`                        |
+| `failed`  | base + `error`               | `sentAt`, `messageId`          |
+
+Los seis de base son `dayKey`, `status`, `trigger`, `recipients`, `subject` y
+`attemptedAt`. Además: `dayKey` debe cumplir `^\d{4}-\d{2}-\d{2}$`, `recipients`
+no puede ir vacío, y `additionalProperties: false` rechaza cualquier campo no
+contemplado.
+
+O sea que un documento `sent` sin `messageId` es imposible de escribir, igual que
+un `pending` que ya traiga `messageId`.
+
+Si el validador no se puede aplicar —permisos insuficientes en la instancia, por
+ejemplo— se registra el problema y la bitácora sigue funcionando sin validación.
+
 ### La bitácora nunca bloquea el envío
 
 El correo es la función principal; la bitácora es contabilidad. Si Mongo está

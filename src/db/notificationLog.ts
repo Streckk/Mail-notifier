@@ -16,7 +16,7 @@
  * bitácora es contabilidad, y no debe poder tumbar el envío.
  */
 
-import { MongoClient, type Collection, type ObjectId } from 'mongodb';
+import { MongoClient, type Collection, type Db, type MongoServerError, type ObjectId } from 'mongodb';
 
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
@@ -41,12 +41,95 @@ export interface NotificationRecord {
 
 const COLLECTION = 'notifications';
 
+/** Campos presentes en cualquier documento, sea cual sea su estado. */
+const BASE_PROPERTIES = {
+  _id: { bsonType: 'objectId' },
+  dayKey: { bsonType: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+  trigger: { enum: ['scheduled', 'manual'] },
+  recipients: { bsonType: 'array', minItems: 1, items: { bsonType: 'string' } },
+  subject: { bsonType: 'string' },
+  attemptedAt: { bsonType: 'date' },
+} as const;
+
+const BASE_REQUIRED = ['dayKey', 'status', 'trigger', 'recipients', 'subject', 'attemptedAt'];
+
+/**
+ * Validador de la colección.
+ *
+ * Se usa `oneOf` en vez de una lista plana de campos opcionales para que el
+ * esquema exprese la invariante real: un documento `sent` obliga a traer
+ * `sentAt` y `messageId`; uno `failed`, el motivo en `error`; y uno `pending`
+ * no puede traer ninguno de los tres. `additionalProperties: false` rechaza
+ * además cualquier campo no contemplado.
+ */
+const VALIDATOR = {
+  $jsonSchema: {
+    bsonType: 'object',
+    oneOf: [
+      {
+        required: BASE_REQUIRED,
+        additionalProperties: false,
+        properties: { ...BASE_PROPERTIES, status: { enum: ['pending'] } },
+      },
+      {
+        required: [...BASE_REQUIRED, 'sentAt', 'messageId'],
+        additionalProperties: false,
+        properties: {
+          ...BASE_PROPERTIES,
+          status: { enum: ['sent'] },
+          sentAt: { bsonType: 'date' },
+          messageId: { bsonType: 'string' },
+        },
+      },
+      {
+        required: [...BASE_REQUIRED, 'error'],
+        additionalProperties: false,
+        properties: {
+          ...BASE_PROPERTIES,
+          status: { enum: ['failed'] },
+          error: { bsonType: 'string' },
+        },
+      },
+    ],
+  },
+};
+
 let client: MongoClient | null = null;
 let collection: Collection<NotificationRecord> | null = null;
 
 /** `true` si hay `MONGODB_URI` configurada y la conexión está viva. */
 export function isEnabled(): boolean {
   return collection !== null;
+}
+
+/** Código de error de Mongo cuando la colección todavía no existe. */
+const NAMESPACE_NOT_FOUND = 26;
+
+/**
+ * Aplica el validador a la colección, creándola si hace falta.
+ * No lanza: si no se pudo aplicar, la bitácora sigue operando sin validación.
+ */
+async function applyValidator(db: Db): Promise<void> {
+  const options = {
+    validator: VALIDATOR,
+    validationLevel: 'strict',
+    validationAction: 'error',
+  };
+
+  try {
+    await db.command({ collMod: COLLECTION, ...options });
+  } catch (error) {
+    if ((error as MongoServerError).code !== NAMESPACE_NOT_FOUND) {
+      logger.error('No se pudo aplicar el validador de esquema', error);
+      return;
+    }
+
+    try {
+      await db.createCollection(COLLECTION, options);
+    } catch (createError) {
+      logger.error('No se pudo crear la colección con validador', createError);
+    }
+  }
 }
 
 /**
@@ -61,6 +144,9 @@ export async function connect(): Promise<void> {
     await client.connect();
 
     const db = client.db(env.mongo.database);
+
+    await applyValidator(db);
+
     collection = db.collection<NotificationRecord>(COLLECTION);
 
     // dayKey resuelve la guarda anti-duplicados; status+attemptedAt, las consultas
